@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>앱인토스 수익 대시보드</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0e0f13; color:#e8eaf0; font-family:'Pretendard','Segoe UI',sans-serif;
+         padding:14px; max-width:720px; margin:0 auto; }
+  h1 { font-size:20px; margin-bottom:2px; }
+  .sub { color:#8b92a3; font-size:12px; margin-bottom:14px; }
+  .card { background:#181a21; border:1px solid #262a35; border-radius:14px;
+          padding:14px; margin-bottom:12px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .label { color:#8b92a3; font-size:12px; }
+  .big { font-size:26px; font-weight:700; margin-top:4px; }
+  .won { font-size:15px; color:#8b92a3; }
+  .good { color:#4ade80; } .warn { color:#fbbf24; } .bad { color:#f87171; }
+  .app-title { font-size:16px; font-weight:700; display:flex; justify-content:space-between; align-items:center; }
+  .badge { font-size:11px; padding:3px 8px; border-radius:20px; background:#262a35; color:#aab; }
+  .badge.RUNNING { background:#14532d; color:#86efac; }
+  .badge.SCHEDULED { background:#3b2f10; color:#fcd34d; }
+  .badge.TERMINATED,.badge.STOPPED { background:#3f1d1d; color:#fca5a5; }
+  .badge.RELEASED,.badge.OPEN { background:#1e3a5f; color:#93c5fd; }
+  .promo { margin-top:10px; padding-top:10px; border-top:1px solid #23262f; }
+  .promo-row { display:flex; justify-content:space-between; font-size:13px; margin-top:6px; }
+  .bar { height:6px; background:#262a35; border-radius:3px; margin-top:5px; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:linear-gradient(90deg,#38bdf8,#818cf8); }
+  .dim { color:#6b7280; font-size:12px; }
+  .sec { color:#8b92a3; font-size:12px; letter-spacing:.06em; margin:18px 0 8px; }
+  #err { display:none; background:#3f1d1d; color:#fca5a5; padding:10px; border-radius:10px; font-size:12px; margin-bottom:12px; }
+  .refresh { float:right; font-size:12px; color:#38bdf8; }
+</style>
+</head>
+<body>
+<h1>앱인토스 수익 대시보드 <span class="refresh" id="rc">자동 새로고침 30초</span></h1>
+<div class="sub">마지막 수집: <span id="upd">-</span></div>
+<div id="err"></div>
+
+<div class="grid">
+  <div class="card"><div class="label">비즈머니 잔액 (실시간)</div><div class="big" id="wallet">-</div></div>
+  <div class="card"><div class="label">프로모션 총 지출</div><div class="big" id="spent">-</div></div>
+  <div class="card"><div class="label">광고 수익 합계 (30일)</div><div class="big" id="rev">-</div></div>
+  <div class="card"><div class="label">광고 노출 합계 (30일)</div><div class="big" id="imp">-</div></div>
+</div>
+
+<div class="sec">앱별 현황</div>
+<div id="apps"></div>
+
+<script>
+const won = n => n == null ? '-' : n.toLocaleString('ko-KR') + '원';
+const badge = s => `<span class="badge ${s}">${s||'-'}</span>`;
+const REVIEW_KO = { PREPARE:'심사 전', IN_REVIEW:'검토 중', REVIEWING:'검토 중', APPROVED:'승인', REJECTED:'반려', RELEASED:'출시됨', OPEN:'운영 중' };
+
+const KEY = new URLSearchParams(location.search).get('key') || 'ait-9df6dc98';
+const DATA_URL = 'https://rhbtcagghiymzelhnvhu.supabase.co/functions/v1/ait-dash?data=1&key=';
+async function load() {
+  const d = await (await fetch(DATA_URL + KEY, {cache:'no-store'})).json();
+  document.getElementById('upd').textContent = d.updatedAt || '수집 대기 중';
+  const err = document.getElementById('err');
+  if (d.error) { err.style.display='block'; err.textContent = '콘솔 수집 오류: ' + d.error + ' (크롬 디버그 창/로그인 확인)'; }
+  else err.style.display = 'none';
+
+  document.getElementById('wallet').textContent = won(d.wallet?.realtimeTotalMoneyAmount);
+
+  let totalSpent = 0, totRev = 0, totImp = 0, appsHtml = '';
+  for (const [slug, a] of Object.entries(d.apps || {})) {
+    const promos = a.promotions || [];
+    const spent = promos.reduce((s,p)=>s+(p.usedBudget||0), 0);
+    const budget = promos.reduce((s,p)=>s+(p.totalBudget||0), 0);
+    totalSpent += spent;
+    const rev = a.review || {};
+    const st = rev.serviceStatus || rev.miniAppStatus || '';
+    const stKo = REVIEW_KO[st] || st || '-';
+
+    let ph = '';
+    for (const p of promos) {
+      const pct = p.totalBudget ? Math.min(100, (p.usedBudget/p.totalBudget*100)) : 0;
+      ph += `<div class="promo">
+        <div class="promo-row"><span>${p.title}</span>${badge(p.status)}</div>
+        <div class="bar"><i style="width:${pct}%"></i></div>
+        <div class="promo-row"><span class="dim">지출 ${won(p.usedBudget)} / 예산 ${won(p.totalBudget)}</span><span class="dim">${pct.toFixed(0)}%</span></div>
+      </div>`;
+    }
+    if (!promos.length) ph = '<div class="dim" style="margin-top:8px">프로모션 없음</div>';
+
+    // 광고 수익 — adFormat=null 행이 합계
+    let adTxt = '데이터 없음';
+    const ov = a.adPerf?.overview?.metric;
+    if (ov && ov.length) {
+      const t = ov.filter(m=>m.adFormat===null).sort((x,y)=>(y.revenue||0)-(x.revenue||0))[0];
+      const bd = {BANNER:'배너',INTERSTITIAL:'전면',REWARDED:'보상형'};
+      const parts = ov.filter(m=>m.adFormat&&m.revenue>0).map(m=>bd[m.adFormat]+' '+won(m.revenue));
+      if (t && (t.revenue>0||t.impression>0)) {
+        adTxt = `<b>${won(t.revenue)}</b> · 노출 ${t.impression.toLocaleString()}` + (parts.length?`<br><span class="dim">${parts.join(' · ')}</span>`:'');
+        totRev += t.revenue||0; totImp += t.impression||0;
+      }
+    }
+    // 지표
+    let metTxt = '';
+    const mt = a.metrics?.metrics;
+    if (mt && mt.length) {
+      metTxt = mt.map(m=>`${m.metricType||m.name||''}: ${(m.value??'-')}`).join(' · ');
+    }
+
+    appsHtml += `<div class="card">
+      <div class="app-title"><span>${a.name}</span>${badge(stKo)}</div>
+      <div class="dim" style="margin-top:4px">광고 수익(30일): ${adTxt}${metTxt?' · '+metTxt:''}</div>
+      <div class="promo-row" style="margin-top:8px"><b>프로모션 지출</b><b>${won(spent)} / ${won(budget)}</b></div>
+      ${ph}
+    </div>`;
+  }
+  document.getElementById('spent').textContent = won(totalSpent);
+  document.getElementById('rev').textContent = won(totRev);
+  document.getElementById('imp').textContent = totImp.toLocaleString();
+  document.getElementById('apps').innerHTML = appsHtml || '<div class="card dim">수집 대기 중…</div>';
+}
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>
